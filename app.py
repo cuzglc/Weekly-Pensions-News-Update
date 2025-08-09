@@ -8,6 +8,13 @@ st.set_page_config(page_title="News Dashboard", layout="wide")
 
 st.title("News Dashboard")
 
+
+def get_state(key, default=None):
+    if key not in st.session_state:
+        st.session_state[key] = default
+    return st.session_state[key]
+
+
 st.write("Upload your latest Excel/CSV of stories or use the sample data packaged with this app.")
 
 @st.cache_data
@@ -62,19 +69,39 @@ def preprocess(df, schema):
 # Data source
 tab1, tab2 = st.tabs(["Upload file", "Use sample"])
 
+
 with tab1:
     uploaded = st.file_uploader("Upload Excel (.xlsx) or CSV", type=["xlsx", "csv"])
     if uploaded is not None:
-        if uploaded.name.lower().endswith(".csv"):
-            df = pd.read_csv(uploaded)
-        else:
-            xls = pd.ExcelFile(uploaded)
-            df = pd.read_excel(xls, xls.sheet_names[0])
-        df = standardize_cols(df)
-        schema = detect_schema(df)
-        st.session_state["data"] = df
-        st.session_state["schema"] = schema
-        st.success("File loaded!")
+        try:
+            if uploaded.name.lower().endswith(".csv"):
+                df_up = pd.read_csv(uploaded)
+                st.session_state["uploaded_type"] = "csv"
+                st.session_state["data"] = standardize_cols(df_up)
+                st.session_state["schema"] = detect_schema(st.session_state["data"])
+                st.success("CSV loaded!")
+            else:
+                # Excel: let user pick a sheet
+                xls = pd.ExcelFile(uploaded, engine="openpyxl")
+                sheets = xls.sheet_names
+                pick = st.selectbox("Select worksheet", sheets, key="sheet_select")
+                if pick:
+                    df_up = pd.read_excel(xls, pick)
+                    st.session_state["uploaded_type"] = "excel"
+                    st.session_state["uploaded_sheet"] = pick
+                    st.session_state["data"] = standardize_cols(df_up)
+                    st.session_state["schema"] = detect_schema(st.session_state["data"])
+                    st.success(f"Excel loaded (sheet: {pick})!")
+        except Exception as e:
+            st.error("Couldn't read that file. Common fixes:
+
+- If it's Excel, ensure it's .xlsx (not .xls)
+- Make sure the first row has column headers
+- Try another sheet if using Excel
+- If dates are stored as text, that's OK; the app will parse them
+
+Error detail: " + str(e))
+
 
 with tab2:
     if st.button("Load sample data"):
@@ -114,14 +141,19 @@ rel_col = schema.get("relevance")  # list of relevance columns
 link_col = schema.get("links")  # list of link columns
 
 if dcol:
-    min_date = pd.to_datetime(df[dcol], errors="coerce").min()
-    max_date = pd.to_datetime(df[dcol], errors="coerce").max()
-    start, end = st.sidebar.date_input(
-        "Date range", 
-        value=(min_date.date(), max_date.date()),
-        min_value=min_date.date() if pd.notnull(min_date) else None,
-        max_value=max_date.date() if pd.notnull(max_date) else None
-    )
+    ser = pd.to_datetime(df[dcol], errors="coerce")
+    min_date = ser.min()
+    max_date = ser.max()
+    if pd.isna(min_date) or pd.isna(max_date):
+        st.sidebar.info("No valid dates detected in the date column. Date filter disabled.")
+        start = end = None
+    else:
+        start, end = st.sidebar.date_input(
+            "Date range", 
+            value=(min_date.date(), max_date.date()),
+            min_value=min_date.date(),
+            max_value=max_date.date()
+        )
 else:
     start = end = None
 
